@@ -43,9 +43,6 @@ public class WifiMap {
      */
     private double fixValue;
 
-    private double maxValue;
-    private double minValue;
-
 
     public WifiMap(BufferedImage origin, WifiMapParam param) {
         this.origin = origin;
@@ -128,21 +125,10 @@ public class WifiMap {
                         double value = fixValue + pPara * Math.log10(d);
                         value += shiftThroughWalls(i, j);
                         gradientImg.setRGB(i, j, getGradientColor(value));
-
-                        if (value > maxValue) {
-                            maxValue = value;
-                        } else if (value < minValue) {
-                            minValue = value;
-                        }
-
                     }
                 }
             }
         }
-
-//        System.out.println("fixValue: " + fixValue);
-//        System.out.println("maxValue: " + maxValue);
-//        System.out.println("minValue: " + minValue);
     }
 
     private void computeFixValue() {
@@ -156,8 +142,6 @@ public class WifiMap {
         fixValue -= apParam.getReduceValue();
         // fixValue += apParam.getFrequencyPara() * Math.log10(apParam.getFrequency());
         fixValue += apParam.getGain();
-
-        minValue = fixValue;
     }
 
     private double getDistance(int x, int y) {
