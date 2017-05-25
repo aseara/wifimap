@@ -2,9 +2,10 @@ package com.github.aseara.wifimap;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
+import java.awt.geom.Line2D;
 import java.awt.image.BufferedImage;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Created by qiujingde on 2017/5/22.
@@ -12,14 +13,10 @@ import java.util.Map;
  */
 public class WifiMap {
 
-    /**
-     * 信号衰减的最大有效值，超过该值的衰减量可以认为信号无效。
-     */
-    private static final double maxValid = 120;
-
     private BufferedImage colorGradient;
-
     private final BufferedImage origin;
+    private List<WifiWallParam> boundWalls;
+    private List<WifiWallParam> normalWalls;
 
     /**
      * gradient image.
@@ -40,37 +37,21 @@ public class WifiMap {
      * 纵坐标最大值。
      */
     private int maxY;
-    /**
-     * 信号强度的最大值。
-     */
-    private double maxValue;
-
-    /**
-     * 信号强度最小值。
-     */
-    private double minValue;
 
     /**
      * 计算信号强度时，除距离相关计算值外的固定值。
      */
     private double fixValue;
-    /**
-     * 图上的坐标点对应信号强度的map。<br />
-     * 用"x,y"代表对应的坐标点。
-     */
-    private Map<String, Double> valueMap = new HashMap<>();
 
+    private double maxValue;
+    private double minValue;
 
 
     public WifiMap(BufferedImage origin, WifiMapParam param) {
         this.origin = origin;
         this.param = param;
-
-        try {
-            colorGradient = ImageIO.read(WifiMap.class.getResourceAsStream("/heatmap/colors.png"));
-        } catch (Exception e) {
-
-        }
+        initColorGradient();
+        initWallParam(param);
     }
 
     /**
@@ -78,31 +59,52 @@ public class WifiMap {
      */
     public BufferedImage compute() {
         initImage();
-
-        // 信号强度值的计算公式为：fieldValue - reduceValue + frequencyPara * lg F + pPara * lg D + gain
-        // 其中F的单位为MHz, D的单位为Km。
-        // 除pPara * lgD外，对于某一AP来说，其他值都为固定的，因此可首先算该固定值(设为fixValue)。
         computeFixValue();
+        computeGradientImg();
 
-        fillValueMap();
-        gradientMap();
-
-        addGradient();
-        negateImage();
-        remap();
-
-        addImage(wifiImg, gradientImg, 0.4f);
+        addImage(wifiImg, gradientImg);
 
         return wifiImg;
     }
 
+    private void initColorGradient() {
+        try {
+            colorGradient = ImageIO.read(WifiMap.class.getResourceAsStream("/heatmap/colors.png"));
+        } catch (Exception e) {
+
+        }
+    }
+
+    private void initWallParam(WifiMapParam param) {
+        boundWalls = new ArrayList<>();
+        normalWalls = new ArrayList<>();
+        if (param.getWallParams() != null) {
+            for (WifiWallParam wallParam : param.getWallParams()) {
+
+                if (wallParam.getWallType() == 4 || wallParam.getWallType() == 5) {
+                    boundWalls.add(wallParam);
+                } else if (wallParam.getWallType() == 2 || wallParam.getWallType() == 3){
+                    normalWalls.add(wallParam);
+                } else {
+                    throw new RuntimeException("衰减物线类型不正确！");
+                }
+
+            }
+        }
+    }
+
     /**
      * 获取热点梯度图。
-     * @return 热点梯度图
      */
     private void initImage() {
         maxX = origin.getWidth();
         maxY = origin.getHeight();
+
+        wifiImg = new BufferedImage(maxX, maxY, BufferedImage.TYPE_4BYTE_ABGR);
+        addImage(wifiImg, origin);
+    }
+
+    private void computeGradientImg() {
         gradientImg = new BufferedImage(maxX, maxY, BufferedImage.TYPE_4BYTE_ABGR);
 
         Graphics2D g2 = gradientImg.createGraphics();
@@ -110,40 +112,49 @@ public class WifiMap {
         g2.fillRect(0, 0, maxX, maxY);
         g2.dispose();
 
-        wifiImg = new BufferedImage(maxX, maxY, BufferedImage.TYPE_4BYTE_ABGR);
-        addImage(wifiImg, origin, 1);
-    }
-
-    private void fillValueMap() {
         WifiApParam apParam = param.getApParam();
         double pPara = apParam.getpPara();
+
+        int cx = param.getApParam().getPointX();
+        int cy = param.getApParam().getPointY();
+
         for (int i = 0; i < maxX; i++) {
             for (int j = 0; j < maxY; j++) {
+                if (i == cx && j == cy) {
+                    gradientImg.setRGB(i, j, getGradientColor(20.0));
+                } else {
+                    if (inBoundsWall(i, j)) {
+                        double d = getDistance(i, j);
+                        double value = fixValue + pPara * Math.log10(d);
+                        value += shiftThroughWalls(i, j);
+                        gradientImg.setRGB(i, j, getGradientColor(value));
 
-                double d = getDistance(i, j);
-                if (d != 0) {
-                    double value = fixValue + pPara * Math.log10(d);
-                    valueMap.put(i+","+j, value);
+                        if (value > maxValue) {
+                            maxValue = value;
+                        } else if (value < minValue) {
+                            minValue = value;
+                        }
 
-                    if (value > maxValue) {
-                        maxValue = value;
-                    } else if (value < minValue) {
-                        minValue = value;
                     }
                 }
             }
         }
 
-        valueMap.put(apParam.getPointX()+","+apParam.getPointY(), minValue);
+//        System.out.println("fixValue: " + fixValue);
+//        System.out.println("maxValue: " + maxValue);
+//        System.out.println("minValue: " + minValue);
     }
 
     private void computeFixValue() {
+        // 信号强度值的计算公式为：fieldValue - reduceValue + frequencyPara * lg F + pPara * lg D + gain
+        // 其中F的单位为MHz, D的单位为Km。
+        // 除pPara * lgD外，对于某一AP来说，其他值都为固定的，因此可首先算该固定值(设为fixValue)。
         // fixValue = fieldValue - reduceValue + frequencyPara * lg F + gain
         fixValue = 0;
         WifiApParam apParam = param.getApParam();
         fixValue += apParam.getFieldValue();
         fixValue -= apParam.getReduceValue();
-        fixValue += apParam.getFrequencyPara() * Math.log10(apParam.getFrequency());
+        // fixValue += apParam.getFrequencyPara() * Math.log10(apParam.getFrequency());
         fixValue += apParam.getGain();
 
         minValue = fixValue;
@@ -158,79 +169,21 @@ public class WifiMap {
         return pixelD * param.getScale() / 1000;
     }
 
-    private void gradientMap() {
-        for (int i = 0; i < maxX; i++) {
-            for (int j = 0; j < maxY; j++) {
-
-                gradientImg.setRGB(i, j, new Color(0, 0, 0, getGradient(i, j)).getRGB());
-
-            }
+    private int getGradientColor(double value) {
+        if (value > 100) {
+            value = 100;
         }
-    }
-
-    private int getGradient(int x, int y) {
-        double value = valueMap.get(x + "," + y);
-
-        if (maxValid < value) {
-            return 0;
+        if (value < 20) {
+            value = 20;
         }
-
-        double pow = 4;
-        double gradient = (value - minValue) / (maxValid - minValue);
-        gradient = 1 - Math.pow(gradient, pow);
-        gradient = gradient * 255;
-
-        return (int) gradient;
-    }
-
-    /**
-     * returns a negated version of this image.
-     */
-    private void negateImage() {
-        for (int x = 0; x < maxX; x++) {
-            for (int y = 0; y < maxY; y++) {
-                int rGB = gradientImg.getRGB(x, y);
-                int r = Math.abs(((rGB >>> 16) & 0xff) - 255);
-                int g = Math.abs(((rGB >>> 8) & 0xff) - 255);
-                int b = Math.abs((rGB & 0xff) - 255);
-
-                gradientImg.setRGB(x, y, (r << 16) | (g << 8) | b);
-            }
-        }
-    }
-
-    /**
-     * remaps black and white picture with colors. It uses the colors from
-     * SPECTRUMPIC. The whiter a pixel is, the more it will get a color from the
-     * bottom of it. Black will stay black.
-     *
-     */
-    private void remap() {
         final int gradientHeight = colorGradient.getHeight() - 1;
-        for (int i = 0; i < maxX; i++) {
-            for (int j = 0; j < maxY; j++) {
+        final double colorY = (100 - value) / 80 * gradientHeight;
 
-                // get heatMapBW color values:
-                final int rGB = gradientImg.getRGB(i, j);
+        final double alpha = (100 - value) / 80 * 255;
 
-                // calculate multiplier to be applied to height of gradiant.
-                float multiplier = rGB & 0xff; // blue
-                multiplier *= ((rGB >>> 8)) & 0xff; // green
-                multiplier *= (rGB >>> 16) & 0xff; // red
-                multiplier /= 16581375; // 255f * 255f * 255f
-
-                // apply multiplier
-                final int y = (int) (multiplier * gradientHeight);
-
-                // remap values
-                // calculate new value based on whitenes of heatMap
-                // (the whiter, the more a color from the top of colorGradiant
-                // will be chosen.
-                final int mapedRGB = colorGradient.getRGB(0, y);
-                // set new value
-                gradientImg.setRGB(i, j, mapedRGB);
-            }
-        }
+        Color color = new Color(colorGradient.getRGB(0, (int)colorY));
+        Color color2 = new Color(color.getRed(), color.getGreen(), color.getBlue(), (int)alpha);
+        return color2.getRGB();
     }
 
     /**
@@ -240,49 +193,56 @@ public class WifiMap {
      *            buffer
      * @param buff2
      *            buffer
-     * @param opaque
-     *            how opaque the second buffer should be drawn
-     * @param x
-     *            x position where the second buffer should be drawn
-     * @param y
-     *            y position where the second buffer should be drawn
      */
-    private void addImage(final BufferedImage buff1, final BufferedImage buff2,
-                          final float opaque, final int x, final int y) {
+    private void addImage(final BufferedImage buff1, final BufferedImage buff2) {
         final Graphics2D g2d = buff1.createGraphics();
-        g2d.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER,
-                opaque));
-        g2d.drawImage(buff2, x, y, null);
+        g2d.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 1f));
+        g2d.drawImage(buff2, 0, 0, null);
         g2d.dispose();
     }
 
-    /**
-     * prints the contents of buff2 on buff1 with the given opaque value
-     * starting at position 0, 0.
-     *
-     * @param buff1
-     *            buffer
-     * @param buff2
-     *            buffer to add to buff1
-     * @param opaque
-     *            opacity
-     */
-    private void addImage(final BufferedImage buff1, final BufferedImage buff2,
-                          final float opaque) {
-        addImage(buff1, buff2, opaque, 0, 0);
+    private boolean inBoundsWall(int x, int y) {
+        int cx = param.getApParam().getPointX();
+        int cy = param.getApParam().getPointY();
+
+        Line2D line = new Line2D.Double(x, y, cx, cy);
+        for (WifiWallParam wall : boundWalls) {
+            if (line.intersectsLine(wall.getStartX(), wall.getStartY(), wall.getEndX(), wall.getEndY())) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
-    private void addGradient() {
-        BufferedImage oldGradient = gradientImg;
+    private double shiftThroughWalls(int x, int y) {
+        double shift = 0;
+        int cx = param.getApParam().getPointX();
+        int cy = param.getApParam().getPointY();
 
-        gradientImg = new BufferedImage(maxX, maxY, BufferedImage.TYPE_4BYTE_ABGR);
-        Graphics2D g2 = gradientImg.createGraphics();
-        g2.setColor(Color.white);
-        g2.fillRect(0, 0, maxX, maxY);
-        g2.dispose();
+        Line2D line = new Line2D.Double(x, y, cx, cy);
+        for (WifiWallParam wall : normalWalls) {
+            if (line.intersectsLine(wall.getStartX(), wall.getStartY(), wall.getEndX(), wall.getEndY())) {
+                shift += shiftThroughWall(wall.getWallType());
+            }
+        }
 
-        addImage(gradientImg, oldGradient, 1);
+        return shift;
     }
 
+    private double shiftThroughWall(int wallType) {
+        double shift = 0.0;
+        switch (wallType) {
+            case 2:
+                shift = 2.0;
+                break;
+            case 3:
+                shift = 1.0;
+                break;
+            default:
+                break;
+        }
+        return shift;
+    }
 
 }
