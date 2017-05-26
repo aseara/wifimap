@@ -13,7 +13,7 @@ public class WifiMapParam {
     /**
      * AP相关参数。
      */
-    private WifiApParam apParam;
+    private List<WifiApParam> apParams;
 
     /**
      * 标尺，单位：米/像素。
@@ -26,12 +26,12 @@ public class WifiMapParam {
     private List<WifiWallParam> wallParams;
 
 
-    public WifiApParam getApParam() {
-        return apParam;
+    public List<WifiApParam> getApParams() {
+        return apParams;
     }
 
-    public void setApParam(WifiApParam apParam) {
-        this.apParam = apParam;
+    public void setApParams(List<WifiApParam> apParams) {
+        this.apParams = apParams;
     }
 
     public double getScale() {

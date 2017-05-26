@@ -17,8 +17,11 @@ public class MapTest {
 
     private WifiMapParam getParam() {
         WifiMapParam param = new WifiMapParam();
+
+        List<WifiApParam> apParams = new ArrayList<>();
         WifiApParam apParam = new WifiApParam();
-        param.setApParam(apParam);
+        apParams.add(apParam);
+        param.setApParams(apParams);
 
         apParam.setFrequency(2400);
         apParam.setFieldValue(92.40);
